@@ -1,0 +1,17 @@
+KPrim:
+  incdirs: [
+    .,
+  ]
+  files: [
+    src/config.sv
+    src/fpu_pkg.vhd
+    src/fp1_to_fp2_comv.vhd
+    src/fp_add.vhd
+    src/fp_classify.vhd
+    src/fp_div.vhd
+    src/fp_mul.vhd
+    src/fp_norm.vhd
+    src/fp_round.vhd
+    src/fp_sqrt.vhd
+    src/fpu_top.vhd
+  ]
