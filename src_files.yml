@@ -3,15 +3,15 @@ KFPU:
     .,
   ]
   files: [
-    src/config.sv
-    src/fpu_pkg.vhd
-    src/fp1_to_fp2_comv.vhd
-    src/fp_add.vhd
-    src/fp_classify.vhd
-    src/fp_div.vhd
-    src/fp_mul.vhd
-    src/fp_norm.vhd
-    src/fp_round.vhd
-    src/fp_sqrt.vhd
-    src/fpu_top.vhd
+    modules/config.sv,
+    modules/fpu_pkg.vhd,
+    modules/fp1_to_fp2.vhd,
+    modules/fp_add.vhd,
+    modules/fp_classify.vhd,
+    modules/fp_div.vhd,
+    modules/fp_mul.vhd,
+    modules/fp_norm.vhd,
+    modules/fp_round.vhd,
+    modules/fp_sqrt.vhd,
+    modules/fpu_top.vhd
   ]
