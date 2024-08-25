@@ -1,3 +1,4 @@
 [submodule "KPrim"]
 	path = KPrim
 	url = https://github.com/klessydra/KPrim
+	branch = develop
