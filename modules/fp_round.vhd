@@ -13,26 +13,31 @@ entity fp_round is
     mantissa_size : natural := 3
   );
   port(
-    clk_i         : in  std_logic;
-    rst_ni        : in  std_logic;
-    op_mode       : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
-    round_mode    : in  std_logic_vector(7 downto 0);
-    result_ru     : in  std_logic_vector(size-1 downto 0);
-    overflow_norm : in  std_logic;
-    inexact       : in  std_logic;
-    precision     : in  std_logic;
-    opp_signs     : in  std_logic;
-    comp_a_b      : in  std_logic_vector(1 downto 0);
-    result        : out std_logic_vector(size-1 downto 0)
+    clk_i           : in  std_logic;
+    rst_ni          : in  std_logic;
+    op_mode         : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
+    round_mode      : in  std_logic_vector(7 downto 0);
+    result_ru       : in  std_logic_vector(size-1 downto 0);
+    overflow_norm   : in  std_logic;
+    inexact_round   : in  std_logic;
+    precision_round : in  std_logic;
+    opp_signs       : in  std_logic;
+    comp_a_b        : in  std_logic_vector(1 downto 0);
+    result          : out std_logic_vector(size-1 downto 0)
   );
 end entity fp_round;
 
 architecture behavioral of fp_round is
 
+  signal inexact        : std_logic;
+  signal precision      : std_logic;
   signal even           : std_logic;
   signal result_rounded : std_logic_vector(size-1 downto 0);
 
 begin
+
+  inexact   <= inexact_round;
+  precision <= precision_round;
 
   even <= result_ru(0);
 
