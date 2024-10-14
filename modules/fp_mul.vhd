@@ -130,7 +130,7 @@ begin
           exit;
         end if;
       elsif i = 0 then
-        exp_shift_mul <= '1' & (0 to exponent_size-1 => '0');
+        exp_shift_mul <= "11" & (0 to exponent_size-2 => '0');
       end if;
     end loop;
   end process;
