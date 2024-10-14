@@ -6,241 +6,180 @@ use ieee.numeric_std.all;
 -- local packages ------------
 use work.fpu_pkg.all;
 
-
 entity fp_sqrt is 
   generic (
-    size          : natural;
-    exponent_size : natural;
-    mantissa_size : natural;
-    bias          : natural
+    size           : natural;
+    exponent_size  : natural;
+    mantissa_size  : natural;
+    bias           : natural
   );
-  port( 
-    clk         : in  std_logic;
-    clrn        : in  std_logic;
-    d           : in  std_logic_vector(31 downto 0); 
-    rm          : in  std_logic_vector(1 downto 0);
-    fsqrt       : in  std_logic;
-    ena         : in  std_logic;
-    s           : out std_logic_vector(31 downto 0);
-    reg_x       : out std_logic_vector(25 downto 0);
-    count       : out std_logic_vector(4 downto 0);
-    busy        : out std_logic;
-    stall       : out std_logic
+  port (
+    clk_i              : in  std_logic;
+    rst_ni             : in  std_logic;
+    sqrt_en            : in  std_logic;
+    op_mode            : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
+    data_a             : in  std_logic_vector(size-1 downto 0); 
+    sign_a             : in  std_logic;
+    exp_a              : in  std_logic_vector(exponent_size-1 downto 0);
+    mnt_a              : in  std_logic_vector(mantissa_size-1 downto 0);
+    zero_a             : in  std_logic;
+    neg_zero_a         : in  std_logic;
+    norm_a             : in  std_logic;
+    inf_a              : in  std_logic;
+    nan_a              : in  std_logic;
+    snan_a             : in  std_logic;
+    qnan_a             : in  std_logic;
+    fp_sqrt_ready      : out std_logic;
+    fp_sqrt_res        : out std_logic_vector(size-1 downto 0);
+    bypass_sqrt        : out std_logic;
+    result_bypass_sqrt : out std_logic_vector(size-1 downto 0);
+    precision_sqrt     : out std_logic;
+    inexact_sqrt       : out std_logic;
+    invalid_sqrt       : out std_logic
   );
-
 end entity fp_sqrt;
 
 architecture behavioural of fp_sqrt is
 
-  constant ZERO                          : std_logic_vector(31 downto 0) := (others => '0');
-  constant INF                           : std_logic_vector(31 downto 0) := x"7f800000";
-  constant NaN                           : std_logic_vector(31 downto 0) := x"7fc00000";
-  signal d_expo_is_00                    : std_logic;
-  signal d_expo_is_ff                    : std_logic;
-  signal d_frac_is_00                    : std_logic;
-  signal sign_a                          : std_logic;
-  signal exp_8                           : std_logic_vector(7 downto 0);
-  signal d_f24                           : std_logic_vector(23 downto 0);
-  signal d_temp24                        : std_logic_vector(23 downto 0);
-  signal d_frac24                        : std_logic_vector(23 downto 0);
-  signal shamt_d                         : std_logic_vector(4 downto 0);
-  signal exp0                            : std_logic_vector(7 downto 0);
-  signal e1_sign, e1_e00, e1_eff, e1_f00 : std_logic;
-  signal e2_sign, e2_e00, e2_eff, e2_f00 : std_logic;
-  signal e3_sign, e3_e00, e3_eff, e3_f00 : std_logic;
-  signal e1_rm, e2_rm, e3_rm             : std_logic_vector(1 downto 0);
-  signal e1_exp, e2_exp, e3_exp          : std_logic_vector(7 downto 0);
-  signal frac0                           : std_logic_vector(31 downto 0);
-  signal frac                            : std_logic_vector(26 downto 0);
-  signal frac_plus_1                     : std_logic;
-  signal frac_rnd                        : std_logic_vector(24 downto 0);
-  signal expo_new                        : std_logic_vector(7 downto 0);
-  signal frac_new                        : std_logic_vector(22 downto 0);
+  signal mnt_lat        : unsigned(mantissa_size+1 downto 0);
+  signal radicand       : unsigned(mantissa_size+1 downto 0);
+  signal adj_denrom_mnt : unsigned(mantissa_size+1 downto 0);
+  signal adj_radicand   : unsigned(mantissa_size+1 downto 0);
+  signal x05_2          : unsigned((mantissa_size+2)*2-1 downto 0) := (others => '0'); -- This signal represents x.5^2
 
-  component shift_even_bits
+  signal adj_exp        : natural;
+  signal odd_exp        : natural;
+  signal a              : unsigned(exponent_size-1 downto 0);
+  signal b              : natural;
+
+  signal sqrt_start     : std_logic := '0';
+  signal sqrt_busy      : std_logic;
+  signal sqrt_ready     : std_logic;
+  signal sqrt_res       : std_logic_vector(mantissa_size+1 downto 0);
+
+  -- Signals for the output
+  signal exp_result     : std_logic_vector(exponent_size-1 downto 0);
+  signal mnt_result     : std_logic_vector(mantissa_size downto 0);
+
+  signal precision_sqrt_int : std_logic;
+  signal inexact_sqrt_int   : std_logic;
+  signal bypass_sqrt_int    : std_logic;
+
+  -- Square root Newton Raphson
+  component sqrt is
     generic (
-      size          : natural;
-      exponent_size : natural;
-      mantissa_size : natural;
-      bias          : natural
+      sqrt_implementation : natural;
+      size                : natural;
+      fraction_size       : natural
     );
-    port (
-      a  : in  std_logic_vector(23 downto 0);
-      b  : out std_logic_vector(23 downto 0);
-      sa : out  std_logic_vector(4 downto 0)
+    Port (
+      clk_i          : in  std_logic;
+      rst_ni         : in  std_logic;
+      start          : in  std_logic;
+      number         : in  std_logic_vector(size-1 downto 0); -- Input number as std_logic_vector
+      sqrt_res       : out std_logic_vector(size-1 downto 0); -- Output square root as std_logic_vector
+      busy           : out std_logic;
+      ready          : out std_logic;
+      precision_sqrt : out std_logic;  -- Indicates result is exactly in the middle
+      inexact_sqrt   : out std_logic  -- Indicates the result is not exact
     );
   end component;
 
-  component root_newton24
-    generic (
-      size          : natural;
-      exponent_size : natural;
-      mantissa_size : natural;
-      bias          : natural
-    );
-    port (
-      clk      : in  std_logic;
-      clrn     : in  std_logic;
-      ena      : in  std_logic;
-      fsqrt    : in  std_logic;
-      d_frac24 : in  std_logic_vector(23 downto 0);
-      frac0    : out std_logic_vector(31 downto 0);
-      busy     : out std_logic;
-      count    : out std_logic_vector(4 downto 0);
-      reg_x    : out std_logic_vector(25 downto 0);
-      stall    : out std_logic
-    );
-  end component;
-
-function final_result(
-  d_sign : std_logic;
-  d_e00  : std_logic;
-  d_eff  : std_logic;
-  d_f00  : std_logic;
-  calc   : std_logic_vector(31 downto 0)
-) return std_logic_vector is
-  variable result   : std_logic_vector(31 downto 0);
-  variable combined : std_logic_vector(3 downto 0); -- Temporary variable to hold concatenation
-begin
-  -- Combine the signals into a std_logic_vector
-  combined := d_sign & d_e00 & d_eff & d_f00;
-
-  case unsigned(combined) is  -- Cast to unsigned for case evaluation
-    when "1XXX" => -- Match "1xxx"
-      result := NaN;  -- Assign NaN
-    when "000X" => -- Match "000x"
-      result := calc; -- Assign calc
-    when "0100" => -- Match "0100"
-      result := calc; -- Assign calc
-    when "0010" => -- Match "0010"
-      result := NaN;  -- Assign NaN
-    when "0011" => -- Match "0011"
-      result := INF;  -- Assign INF
-    when others =>
-      result := ZERO; -- Assign ZERO
-  end case;
-
-  return result;
-end function;
-
 begin
 
-  d_expo_is_00 <= not(or_vect_bits(d(30 downto 23)));
-  d_expo_is_ff <= and_vect_bits(d(30 downto 23));
-  d_frac_is_00 <= not(or_vect_bits(d(22 downto 0)));
+  sqrt_start     <= sqrt_en            and not (sqrt_busy or bypass_sqrt_int);
+  precision_sqrt <= precision_sqrt_int and not bypass_sqrt_int;
+  inexact_sqrt   <= inexact_sqrt_int   and not bypass_sqrt_int;
 
-  sign_a   <= d(31);
-  exp_8    <= std_logic_vector(unsigned('0' & d(30 downto 24)) + 63 + d(23));
-  d_f24    <= (d(22 downto 0) & '0') when d_expo_is_00 else ('1' & d(22 downto 0));
-  d_temp24 <= ('0' & d_f24(23 downto 1)) when d(23) else d_f24;
-  exp0     <= std_logic_vector(unsigned(exp_8) - unsigned("0000" & shamt_d(4 downto 1)));
+  -- Instantiate the square root component
+  sqrt_inst : sqrt
+    generic map(
+      sqrt_implementation => 0,
+      size                => mantissa_size+2,
+      fraction_size       => mantissa_size
+    )
+    port map(
+      clk_i          => clk_i,
+      rst_ni         => rst_ni,
+      start          => sqrt_start,
+      number         => std_logic_vector(radicand), -- the mantissa and the implicit bit
+      sqrt_res       => sqrt_res,
+      busy           => sqrt_busy,
+      ready          => sqrt_ready,
+      precision_sqrt => precision_sqrt_int,
+      inexact_sqrt   => inexact_sqrt_int
+    );
 
-  process(clrn, clk)
+  process(all)
+    variable i_rev : natural;
   begin
-    if(not(clrn)) then
-      e1_rm   <= (others => '0'); e2_rm <= (others => '0'); e3_rm <= (others => '0');
-      e1_exp  <= (others => '0'); e2_exp  <= (others => '0'); e3_exp  <= (others => '0');
-      e1_sign <= '0'; e2_sign <= '0'; e3_sign <= '0';
-      e1_e00  <= '0'; e2_e00  <= '0'; e3_e00  <= '0';
-      e1_eff  <= '0'; e2_eff  <= '0'; e3_eff  <= '0';
-      e1_f00  <= '0'; e2_f00  <= '0'; e3_f00  <= '0';
-    elsif rising_edge(clk) then
-      if (ena) then
-        e1_sign <= sign_a; e2_sign      <= e1_sign; e3_sign <= e2_sign;
-        e1_rm   <= rm;     e2_rm        <= e1_rm;   e3_rm   <= e2_rm;
-        e1_exp  <= exp0;   e2_exp       <= e1_exp;  e3_exp  <= e2_exp;
-        e1_e00  <= d_expo_is_00; e2_e00 <= e1_e00;  e3_e00  <= e2_e00;
-        e1_eff  <= d_expo_is_ff; e2_eff <= e1_eff;  e3_eff  <= e2_eff;
-        e1_f00  <= d_frac_is_00; e2_f00 <= e1_f00; e3_f00   <= e2_f00;
+    adj_denrom_mnt <= unsigned('0' & '0' & mnt_a);
+    adj_exp <= 0;
+    i_rev   := 0;
+    for i in mantissa_size-1 downto 0 loop
+      if mnt_a(i) then
+        if (i_rev mod 2)=0 then
+          adj_denrom_mnt <= unsigned(mnt_a(i downto 0) & (mantissa_size-1 downto i => '0')) & '0';
+          adj_exp <= i_rev;
+          exit;
+        else
+          adj_denrom_mnt <= '0' & unsigned(mnt_a(i downto 0) & (mantissa_size-1 downto i => '0'));
+          adj_exp <= i_rev;
+          exit;
+        end if;
+      end if;
+      i_rev := i_rev+1;
+    end loop;
+  end process;
+
+  adj_radicand   <= adj_denrom_mnt                 when norm_a = '0' else 
+                    unsigned('0' & norm_a & mnt_a) when odd_exp = 1  else
+                    unsigned(norm_a & mnt_a & '0');
+  --adj_radicand   <= unsigned('0' & mnt_a & '0') when norm_a = '0' else unsigned('0' & norm_a & mnt_a);
+  radicand       <= adj_radicand when sqrt_start else mnt_lat;
+  --x05_2          <= unsigned(sqrt_res & '1')*unsigned(sqrt_res & '1');
+  fp_sqrt_ready  <= sqrt_ready;
+
+  -- Processing results and handling special cases
+  process(rst_ni, clk_i)
+  begin
+    if (rst_ni = '0') then
+      mnt_lat <= (others => '0');
+    elsif rising_edge(clk_i) then
+      if (sqrt_start) then
+        mnt_lat <= adj_radicand;
       end if;
     end if;
   end process;
 
-  shift_d : shift_even_bits
-    generic map(
-      size          => size,
-      exponent_size => exponent_size,
-      mantissa_size => mantissa_size,
-      bias          => bias 
-    )
-    port map(
-      a  => d_temp24,
-      b  => d_frac24,
-      sa => shamt_d
-    );
+  RES_BYPASS : process(all)
+  begin
+    invalid_sqrt <= '0';
+    bypass_sqrt_int  <= '0';
+    result_bypass_sqrt <= data_a; -- route data_a to the output (result for an infinity input)
+    if op_mode(4) then
+      if (zero_a) then -- sqrt of zero is zero and sqrt of negative zero is negative zero
+        bypass_sqrt_int <= '1';
+        result_bypass_sqrt <= sign_a & (0 to size-2 => '0');
+      elsif sign_a or nan_a then -- set the output to the canonical quiet nan (qnan) for negative and input NaNs
+        bypass_sqrt_int <= '1';
+        result_bypass_sqrt <= '0' & (0 to exponent_size-1 => '1') & '1' & (mantissa_size-2 downto 0 => '0'); -- The IEEE standard does not specify the sign of the NaN, positive sign is chosen for the canonical qNaN
+        invalid_sqrt <= snan_a or (sign_a and not qnan_a);
+      elsif inf_a then -- if one input is an infinity and the other is not
+        bypass_sqrt_int <= '1';
+      end if;
+    end if;
+  end process;
 
-  frac_newton : root_newton24
-    generic map(
-      size          => size,
-      exponent_size => exponent_size,
-      mantissa_size => mantissa_size,
-      bias          => bias
-    )
-    port map(
-      clk      => clk,
-      clrn     => clrn,
-      ena      => ena,
-      fsqrt    => fsqrt,
-      d_frac24 => d_frac24,
-      frac0    => frac0,
-      busy     => busy,
-      count    => count,
-      reg_x    => reg_x,
-      stall    => stall
-    );
+  odd_exp     <= to_integer(unsigned(exp_a(0 downto 0)));
+  a           <= unsigned(exp_a)/2 + bias/2;
+  b           <= odd_exp;
+  -- Calculate the new exponent
+  mnt_result  <= sqrt_res(mantissa_size downto 0);  -- Get mantissa result from sqrt unit
+  exp_result  <= std_logic_vector(a + b) when norm_a else std_logic_vector(to_unsigned((bias)/2-adj_exp/2, exponent_size)); -- Adjust exponent for sqrt
+  --exp_result  <= std_logic_vector(a + b) when norm_a else std_logic_vector(to_unsigned((bias/2)-1, exponent_size)+sqrt_res(mantissa_size));
 
-  frac <= frac0(31 downto 6) & or_vect_bits(frac0(5 downto 0));
-  frac_plus_1 <=
-    (not e3_rm(1) and not e3_rm(0) and  frac(3) and  frac(2) and not frac(1) and not frac(0)) or
-    (not e3_rm(1) and not e3_rm(0) and  frac(2) and (frac(1) or frac(0)))                     or
-    (not e3_rm(1) and     e3_rm(0) and (frac(2) or   frac(1) or frac(0)) and     e3_sign)     or
-    (    e3_rm(1) and not e3_rm(0) and (frac(2) or   frac(1) or frac(0)) and not e3_sign);
-
-  frac_rnd <= std_logic_vector(unsigned('0' & frac(26 downto 3)) + frac_plus_1);
-
-  expo_new <= std_logic_vector(unsigned(e3_exp) + 1) when frac_rnd(24) else e3_exp;
-  frac_new <= frac_rnd(23 downto 1)                  when frac_rnd(24) else frac_rnd(22 downto 0);
-  s        <= final_result(e3_sign, e3_e00, e3_eff, e3_f00, (e3_sign & expo_new & frac_new));
-
-end behavioural;
-
--- ieee packages ------------
-library IEEE;
-use ieee.std_logic_1164.all;
-use ieee.numeric_std.all;
-
--- local packages ------------
-use work.fpu_pkg.all;
-
-entity shift_even_bits is
-  generic (
-    size          : natural;
-    exponent_size : natural;
-    mantissa_size : natural;
-    bias          : natural
-  );
-  port (
-    a   : in  std_logic_vector(23 downto 0);
-    b   : out std_logic_vector(23 downto 0);
-    sa  : out std_logic_vector(4 downto 0)
-  );
-end entity shift_even_bits;
-
-
-architecture behavioural of shift_even_bits is
-  signal a5, a4, a3, a2, a1 : std_logic_vector(23 downto 0);
-begin
-
-  a5    <= a;
-  sa(4) <= not or_vect_bits(a5(23 downto 8));
-  a4    <= (others => '0') when sa(4) = '1' else a5(7 downto 0)  & (8 to 23 => '0');
-  sa(3) <= not or_vect_bits(a4(23 downto 16));
-  a3    <= (others => '0') when sa(3) = '1' else a4(15 downto 0) & (16 to 23 => '0');
-  sa(2) <= not or_vect_bits(a3(23 downto 20));
-  a2    <= (others => '0') when sa(2) = '1' else a3(19 downto 0) & (20 to 23 => '0');
-  sa(1) <= not or_vect_bits(a2(23 downto 22));
-  a1    <= (others => '0') when sa(1) = '1' else a2(21 downto 0) & (22 to 23 => '0');
-  sa(0) <= '0';
-  b     <= a1;
+  fp_sqrt_res <= sign_a & exp_result & mnt_result(mantissa_size-1 downto 0);
+  bypass_sqrt <= bypass_sqrt_int;
 
 end behavioural;
