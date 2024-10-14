@@ -187,7 +187,7 @@ begin
     bypass_add <= '0';
     if nan_a or nan_b then -- set the output to the canonical quiet nan (qnan)
       bypass_add <= '1';
-      result_bypass_add <= '0' & (0 to exponent_size-1 => '1') & '1' & (mantissa_size-2 downto 0 => '0'); -- The standard does not specify the sign of the NaN, hence negative NaN was chosen as a default QNaN to match the results of the Gold Model compiled by GCC
+      result_bypass_add <= '0' & (0 to exponent_size-1 => '1') & '1' & (mantissa_size-2 downto 0 => '0'); -- The standard does not specify the sign of the NaN, positive sign is chosen for the canonical qNaN
     elsif inf_a xor inf_b then -- if one input is an infinity and the other is not
       bypass_add <= '1';
       if comp_a_b = "10" then -- if a > b, then a is the infinity
