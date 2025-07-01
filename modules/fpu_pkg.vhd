@@ -11,7 +11,8 @@ use ieee.math_real.all;
 
 package fpu_pkg is
 
-  constant FP_INSTR_LEN : natural := 6;
+  constant FP_INSTR_LEN  : natural := 10;
+  constant FP_SUB_OP_LEN : natural := 8;
 
   function add_vect_bits(vect : std_logic_vector) return natural;
   function or_vect_bits(vector : std_logic_vector) return std_logic;
