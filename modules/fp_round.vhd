@@ -43,7 +43,6 @@ begin
 
   ROUNDING: process(all)
   begin
-
     if result_ru(size-2 downto mantissa_size) = (0 to exponent_size-1 => '1') then
       result_rounded <= result_ru;
     else
