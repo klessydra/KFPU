@@ -18,6 +18,7 @@ entity fpu_top is
     clk_i            : in  std_logic;
     rst_ni           : in  std_logic;
     op_mode          : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
+    sub_op_mode      : in  std_logic_vector(FP_SUB_OP_LEN-1 downto 0);
     round_mode       : in  std_logic_vector(7 downto 0);
     data_a           : in  std_logic_vector(size-1 downto 0);
     data_b           : in  std_logic_vector(size-1 downto 0);
@@ -76,12 +77,14 @@ architecture behavioral of fpu_top is
 
   signal result_int          : std_logic_vector(size-1 downto 0);
 
+  signal round_en            : std_logic;
   signal mode                : std_logic;
   signal div_zero            : std_logic;
   signal invalid_add_sub     : std_logic;
   signal invalid_mul         : std_logic;
   signal invalid_div         : std_logic;
   signal invalid_sqrt        : std_logic;
+  signal invalid_cmp         : std_logic;
   signal exp_add_int         : std_logic_vector(exponent_size-1 downto 0);
   signal exp_mul_int         : std_logic_vector(exponent_size+1 downto 0);
   signal exp_int             : std_logic_vector(exponent_size+1 downto 0);
@@ -122,6 +125,7 @@ architecture behavioral of fpu_top is
   signal inexact_mul         : std_logic;
   signal inexact_div         : std_logic;
   signal inexact_sqrt        : std_logic;
+  signal inexact_conv_f_f    : std_logic;
   signal inexact_norm        : std_logic;
   signal inexact_round       : std_logic;
   signal inexact_round_int   : std_logic;
@@ -160,6 +164,11 @@ architecture behavioral of fpu_top is
   signal inf_out            : std_logic;
   signal flag_of_int        : std_logic;
   signal flag_in_int        : std_logic;
+
+  signal res_cmp           : std_logic;
+  signal res_min_max       : std_logic_vector(size-1 downto 0);
+  signal res_sgnj          : std_logic_vector(size-1 downto 0);
+  signal res_conv_f_f      : std_logic_vector(63 downto 0);
 
   component fp_classify
     generic (
@@ -382,6 +391,64 @@ architecture behavioral of fpu_top is
     );
   end component;
 
+
+  component fp_cmp is
+    generic (
+      size          : natural;
+      exponent_size : natural;
+      mantissa_size : natural;
+      bias          : natural
+    );
+    port (
+      clk_i             : in  std_logic;
+      rst_ni            : in  std_logic;
+      op_mode           : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
+      sub_op_mode       : in  std_logic_vector(FP_SUB_OP_LEN-1 downto 0);
+      data_a            : in  std_logic_vector(size-1 downto 0);
+      data_b            : in  std_logic_vector(size-1 downto 0);
+      sign_a            : in  std_logic;
+      sign_b            : in  std_logic;
+      opp_signs         : in  std_logic;
+      comp_a_b          : in  std_logic_vector(1 downto 0);
+      zero_a            : in  std_logic;
+      zero_b            : in  std_logic;
+      nan_a             : in  std_logic;
+      nan_b             : in  std_logic;
+      snan_a            : in  std_logic;
+      snan_b            : in  std_logic;
+      res_cmp           : out std_logic;
+      res_min_max       : out std_logic_vector(size-1 downto 0);
+      invalid_cmp       : out std_logic
+    );
+  end component;
+
+  component fp_conv_f_f is
+    generic (
+      size          : natural;
+      exponent_size : natural;
+      mantissa_size : natural;
+      bias          : natural
+    );
+    port (
+      clk_i             : in  std_logic;
+      rst_ni            : in  std_logic;
+      valid_i           : in  std_logic;
+      mode              : in  std_logic;
+      data_a            : in  std_logic_vector(size-1 downto 0);
+      sign_a            : in  std_logic;
+      exp_a             : in  std_logic_vector(exponent_size-1 downto 0);
+      mnt_a             : in  std_logic_vector(mantissa_size-1 downto 0);
+      zero_a            : in  std_logic;
+      neg_zero_a        : in  std_logic;
+      norm_a            : in  std_logic;
+      inf_a             : in  std_logic;
+      nan_a             : in  std_logic;
+      inexact_conv_f_f  : out std_logic;
+      res_conv_f_f      : out std_logic_vector(63 downto 0); -- the converted result my fit inside a 64-bit output
+      ready_conv        : out std_logic
+    );
+  end component;
+
   component fp_norm
     generic (
       size            : natural;
@@ -394,6 +461,7 @@ architecture behavioral of fpu_top is
       rst_ni          : in  std_logic;
       op_mode         : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
       round_mode      : in  std_logic_vector(7 downto 0);
+      round_en        : in  std_logic;
       norm_a          : in  std_logic;
       norm_b          : in  std_logic;
       inf_a           : in  std_logic;
@@ -450,7 +518,7 @@ begin
   flag_in <= flag_in_int;
 
   flag_of_int <= (inf_out and not max_exp_in and not div_zero) or (overflow_norm and not bypass and not op_mode(3)) or overflow_div;
-  flag_in_int <= invalid_add_sub or invalid_mul or invalid_div or invalid_sqrt;
+  flag_in_int <= invalid_add_sub or invalid_mul or invalid_div or invalid_sqrt or invalid_cmp;
 
   mode <= '1' when op_mode(1) = '1' else '0';
 
@@ -463,13 +531,17 @@ begin
   min_exp_ru          <= not(or_vect_bits(result_ru(mantissa_size+exponent_size-1 downto mantissa_size)));
   max_exp_ru          <= and_vect_bits(result_ru(mantissa_size+exponent_size-1 downto mantissa_size));
   min_mnt_out         <= not(or_vect_bits(result_int(mantissa_size-1 downto 0)));
-  min_exp_out         <= not(or_vect_bits(result_int(mantissa_size+exponent_size-1 downto mantissa_size)));
-  max_exp_out         <= and_vect_bits(result_int(mantissa_size+exponent_size-1 downto mantissa_size));
+  min_exp_out         <= not(or_vect_bits(result_int(mantissa_size+exponent_size-1 downto mantissa_size))) and not(or_vect_bits(op_mode(8 downto 6)));
+  max_exp_out         <= and_vect_bits(result_int(mantissa_size+exponent_size-1 downto mantissa_size)) and not(or_vect_bits(op_mode(8 downto 6)));
   inf_out             <= '1' when ((max_exp_out = '1') and (result_int(mantissa_size-1 downto 0) = (0 to mantissa_size-1 => '0'))) else '0';
-  result              <= result_int;
+  result              <= ((1 to size-1 => '0') & res_cmp) when op_mode(6) else
+                         res_min_max                      when op_mode(7) else
+                         res_sgnj                         when op_mode(8) else
+                         result_int;
   inexact_round_int   <= inexact_div   when op_mode(3) else inexact_sqrt   when op_mode(4) else inexact_round;
   precision_round_int <= precision_div when op_mode(3) else precision_sqrt when op_mode(4) else precision_round;
   result_ru_int       <= result_div    when op_mode(3) else fp_sqrt_res    when op_mode(4) and not bypass_sqrt else result_ru;
+  res_sgnj            <= sign_b & (data_a(size-2 downto 0));
 
   process(clk_i)  
   begin
@@ -489,6 +561,7 @@ begin
     div_en        <= '0';
     sqrt_en       <= '0';
     max_exp_in    <= '0';
+    round_en      <= '1'; -- enabled by default unless the op is comparison, min/max, signj, or classify
     if valid_i then
       if or_vect_bits(op_mode(1 downto 0)) then -- add or sub
         add_sub_en    <= '1';
@@ -521,11 +594,13 @@ begin
         sign_res      <= sign_res_sqrt;
         max_exp_in    <= max_exp_a;
         sqrt_en       <= '1';
-      else -- fma
+      elsif op_mode(5) then-- fma
         bypass        <= bypass_fma;
         result_bypass <= result_bypass_fma;
         sign_res      <= sign_res_fma;
         max_exp_in    <= max_exp_a or max_exp_b or max_exp_c;
+      elsif op_mode(6) or op_mode(7) or op_mode(8) then -- cmp, or min/max, or sgnj
+        round_en      <= '0';
       end if;
     end if;
   end process;
@@ -634,42 +709,42 @@ begin
     bias          => bias
   )
   port map (
-      clk_i             => clk_i,
-      rst_ni            => rst_ni,
-      mul_en            => mul_en,
-      mode              => mode,
-      data_a            => data_a,
-      data_b            => data_b,
-      sign_a            => sign_a,
-      sign_b            => sign_b,
-      exp_a             => exp_a,
-      exp_b             => exp_b,
-      mnt_a             => mnt_a,
-      mnt_b             => mnt_b,
-      zero_a            => zero_a,
-      zero_b            => zero_b,
-      norm_a            => norm_a,
-      norm_b            => norm_b,
-      inf_a             => inf_a,
-      inf_b             => inf_b,
-      nan_a             => nan_a,
-      nan_b             => nan_b,
-      snan_a            => snan_a,
-      snan_b            => snan_b,
-      opp_signs         => opp_signs,
-      comp_a_b          => comp_a_b,
-      precision         => open,
-      inexact_mul       => inexact_mul,
-      invalid_mul       => invalid_mul,
-      exp_mul_int       => exp_mul_int,
-      exp_shift_mul     => exp_shift_mul,
-      mnt_res_mul       => mnt_res_mul,
-      sign_res_mul      => sign_res_mul,
-      bypass_mul        => bypass_mul,
-      result_bypass_mul => result_bypass_mul,
-      underflow_mul     => underflow_mul,
-      overflow_mul      => overflow_mul,
-      ready_mul         => ready_mul
+    clk_i             => clk_i,
+    rst_ni            => rst_ni,
+    mul_en            => mul_en,
+    mode              => mode,
+    data_a            => data_a,
+    data_b            => data_b,
+    sign_a            => sign_a,
+    sign_b            => sign_b,
+    exp_a             => exp_a,
+    exp_b             => exp_b,
+    mnt_a             => mnt_a,
+    mnt_b             => mnt_b,
+    zero_a            => zero_a,
+    zero_b            => zero_b,
+    norm_a            => norm_a,
+    norm_b            => norm_b,
+    inf_a             => inf_a,
+    inf_b             => inf_b,
+    nan_a             => nan_a,
+    nan_b             => nan_b,
+    snan_a            => snan_a,
+    snan_b            => snan_b,
+    opp_signs         => opp_signs,
+    comp_a_b          => comp_a_b,
+    precision         => open,
+    inexact_mul       => inexact_mul,
+    invalid_mul       => invalid_mul,
+    exp_mul_int       => exp_mul_int,
+    exp_shift_mul     => exp_shift_mul,
+    mnt_res_mul       => mnt_res_mul,
+    sign_res_mul      => sign_res_mul,
+    bypass_mul        => bypass_mul,
+    result_bypass_mul => result_bypass_mul,
+    underflow_mul     => underflow_mul,
+    overflow_mul      => overflow_mul,
+    ready_mul         => ready_mul
   );
 
   fp_div_inst : fp_div
@@ -746,6 +821,61 @@ begin
     invalid_sqrt       => invalid_sqrt
   );
 
+  fp_conv_f_f_inst : fp_conv_f_f
+  generic map(
+    size          => size,
+    exponent_size => exponent_size,
+    mantissa_size => mantissa_size,
+    bias          => bias
+  )
+  port map(
+    clk_i            => clk_i,
+    rst_ni           => rst_ni,
+    valid_i          => valid_i,
+    mode             => mode,
+    data_a           => data_a,
+    sign_a           => sign_a,
+    exp_a            => exp_a,
+    mnt_a            => mnt_a,
+    zero_a           => zero_a,
+    neg_zero_a       => neg_zero_a,
+    norm_a           => norm_a,
+    inf_a            => inf_a,
+    nan_a            => nan_a,
+    inexact_conv_f_f => inexact_conv_f_f,
+    res_conv_f_f     => res_conv_f_f,
+    ready_conv       => open
+  );
+
+  fp_cmp_inst : fp_cmp
+  generic map(
+    size          => size,
+    exponent_size => exponent_size,
+    mantissa_size => mantissa_size,
+    bias          => bias
+  )
+  port map (
+    clk_i         => clk_i,
+    rst_ni        => rst_ni,
+    op_mode       => op_mode,
+    sub_op_mode   => sub_op_mode,
+    data_a        => data_a,
+    data_b        => data_b,
+    sign_a        => sign_a,
+    sign_b        => sign_b,
+    opp_signs     => opp_signs,
+    comp_a_b      => comp_a_b,
+    zero_a        => zero_a,
+    zero_b        => zero_b,
+    nan_a         => nan_a,
+    nan_b         => nan_b,
+    snan_a        => snan_a,
+    snan_b        => snan_b,
+    res_cmp       => res_cmp,
+    res_min_max   => res_min_max,
+    invalid_cmp   => invalid_cmp
+  );
+
   fp_norm_inst : fp_norm
   generic map (
     size          => size,
@@ -758,6 +888,7 @@ begin
     rst_ni          => rst_ni,
     op_mode         => op_mode,
     round_mode      => round_mode,
+    round_en        => round_en,
     norm_a          => norm_a,
     norm_b          => norm_b,
     inf_a           => inf_a,

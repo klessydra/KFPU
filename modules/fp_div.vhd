@@ -52,7 +52,8 @@ end entity fp_div;
 
 architecture behavioral of fp_div is
 
-  constant mantissa_size_width : integer := integer(ceil(log2(real(mantissa_size+1)))); -- mantissa_size plus the implicit bit
+  constant extra_precision_bits : integer := 0;
+  constant mantissa_size_width  : integer := integer(ceil(log2(real(mantissa_size+1)))); -- mantissa_size plus the implicit bit
 
   type DIV_STATES is (UNPACK, NORMALIZE_A, NORMALIZE_B, DIVIDE, DIVIDE_0, DIVIDE_1, DIVIDE_2, DIVIDE_3, NORMALIZE_0,
                  NORMALIZE_1, ROUNDING, PACK);
@@ -61,25 +62,26 @@ architecture behavioral of fp_div is
 
   constant div_op_size : natural := mantissa_size*2+1+4;
 
-  signal i         : integer :=0;
-  signal a_m       : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
-  signal a_m2       : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
-  signal b_m       : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
-  signal b_m2       : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
-  signal z_m       : std_logic_vector(mantissa_size+3 downto 0); -- one extra implicit bit
-  signal z_m2       : std_logic_vector(mantissa_size+3 downto 0); -- one extra implicit bit
-  signal a_e       : std_logic_vector(exponent_size+1 downto 0); -- extended with an overflow bit and a sign bit
-  signal b_e       : std_logic_vector(exponent_size+1 downto 0); -- extended with an overflow bit and a sign bit
-  signal z_e       : std_logic_vector(exponent_size+1 downto 0); -- extended with an overflow bit and a sign bit
-  signal a_s       : std_logic;
-  signal b_s       : std_logic;
-  signal z_s       : std_logic;
-  signal mnt_div_res : std_logic_vector(mantissa_size downto 0);
-  signal quotient  : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
-  signal divisor   : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
-  signal dividend  : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
-  signal remainder : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
-  signal count     : integer;
+  signal i           : integer :=0;
+  signal a_m         : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
+  signal a_m2        : std_logic_vector(2*mantissa_size downto 0); -- one extra implicit bit
+  signal b_m         : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
+  signal b_m2        : std_logic_vector(mantissa_size downto 0); -- one extra implicit bit
+  signal z_m         : std_logic_vector(mantissa_size+3 downto 0); -- one extra implicit bit
+  signal z_m2        : std_logic_vector(mantissa_size+extra_precision_bits+3 downto 0); -- one extra implicit bit
+  signal a_e         : std_logic_vector(exponent_size+1 downto 0); -- extended with an overflow bit and a sign bit
+  signal b_e         : std_logic_vector(exponent_size+1 downto 0); -- extended with an overflow bit and a sign bit
+  signal z_e         : std_logic_vector(exponent_size+1 downto 0); -- extended with an overflow bit and a sign bit
+  signal a_s         : std_logic;
+  signal b_s         : std_logic;
+  signal z_s         : std_logic;
+  signal mnt_div_res : std_logic_vector(2*mantissa_size+extra_precision_bits downto 0);
+  signal mnt_rem_res : std_logic_vector(2*mantissa_size+extra_precision_bits downto 0);
+  signal quotient    : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
+  signal divisor     : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
+  signal dividend    : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
+  signal remainder   : std_logic_vector(div_op_size-1 downto 0) := (others => '0');
+  signal count       : integer;
 
   signal round_bit  : std_logic := '0';
   signal sticky     : std_logic := '0';
@@ -98,17 +100,19 @@ architecture behavioral of fp_div is
   component divider is
     generic (
       divider_implementation : natural;
-      size                   : natural
+      size                   : natural;
+      fraction_size          : natural;
+      extra_precision_bits   : natural
     );
     Port (
       reset                 : in  std_logic;
       clk                   : in  std_logic;
-      dividend_i            : in  std_logic_vector(mantissa_size downto 0);
-      divisor_i             : in  std_logic_vector(mantissa_size downto 0);
+      dividend_i            : in  std_logic_vector(2*mantissa_size downto 0);
+      divisor_i             : in  std_logic_vector(2*mantissa_size downto 0);
       div_enable            : in  std_logic;
       div_finished          : out std_logic;
-      result_div            : out std_logic_vector(mantissa_size downto 0);
-      result_rem            : out std_logic_vector(mantissa_size downto 0)
+      result_div            : out std_logic_vector(2*mantissa_size+extra_precision_bits downto 0);
+      result_rem            : out std_logic_vector(2*mantissa_size+extra_precision_bits downto 0)
     );
   end component;
 
@@ -129,17 +133,19 @@ begin
   divider_inst : divider
     generic map(
       divider_implementation => 5,
-      size                   => mantissa_size+1
+      size                   => 2*mantissa_size+1,
+      fraction_size          => 0,
+      extra_precision_bits   => extra_precision_bits
     )
     port map(
       reset        => not rst_ni,
       clk          => clk_i,
       dividend_i   => a_m2, 
-      divisor_i    => b_m2,
+      divisor_i    => (0 to mantissa_size-1 => '0') & b_m2,
       div_enable   => div_start,
       div_finished => mnt_div_done,
       result_div   => mnt_div_res,
-      result_rem   => open
+      result_rem   => mnt_rem_res
     );
 
   CLZ_Inst : CLZ_top
@@ -195,7 +201,7 @@ begin
         when UNPACK => 
           a_m   <= norm_a & mnt_a;
           b_m   <= norm_b & mnt_b;
-          a_m2   <= norm_a & mnt_a;
+          a_m2   <= norm_a & mnt_a & (0 to mantissa_size-1 => '0');
           b_m2   <= norm_b & mnt_b;
           a_e   <= std_logic_vector(unsigned("00" & exp_a) - bias);
           b_e   <= std_logic_vector(unsigned("00" & exp_b) - bias);
@@ -254,12 +260,12 @@ begin
               if (norm_b = '0') then
                 b_e <= std_logic_vector(to_signed(-bias+1, exponent_size+2));
               end if;
-              div_start <= '1';
               if not a_m(mantissa_size) then -- if 'b' is not normalized, then normalize it 
                 state <= NORMALIZE_A;
               elsif not b_m(mantissa_size) then -- if 'b' is not normalized, then normalize it 
                 state <= NORMALIZE_B;
               else
+                div_start <= '1';
                 state <= DIVIDE_0;
               end if;
             end if;
@@ -267,16 +273,20 @@ begin
 
         when NORMALIZE_A =>
             a_m <= std_logic_vector(unsigned(a_m) sll to_integer(unsigned(mnt_clz)));
+            a_m2 <= std_logic_vector(unsigned(a_m2) sll to_integer(unsigned(mnt_clz)));
             a_e <= std_logic_vector(unsigned(a_e) - to_integer(unsigned(mnt_clz)));
             if not b_m(mantissa_size) then -- if 'b' is not normalized, then normalize it 
               state <= NORMALIZE_B;
             else
+              div_start <= '1';
               state <= DIVIDE_0;
             end if;
 
         when NORMALIZE_B =>
+          div_start <= '1';
           state <= DIVIDE_0;
           b_m <= std_logic_vector(unsigned(b_m) sll to_integer(unsigned(mnt_clz)));
+          b_m2 <= std_logic_vector(unsigned(b_m) sll to_integer(unsigned(mnt_clz)));
           b_e <= std_logic_vector(unsigned(b_e) - to_integer(unsigned(mnt_clz)));
 
         when DIVIDE_0 =>
@@ -294,6 +304,9 @@ begin
           remainder <= remainder(div_op_size-2 downto 0) & dividend(div_op_size-1);
           dividend  <= dividend(div_op_size-2 downto 0) & '0';
           state     <= DIVIDE_2;
+          z_m2(mantissa_size+3 downto 0) <= mnt_div_res(mantissa_size+extra_precision_bits downto extra_precision_bits) & 
+                                            mnt_rem_res(mantissa_size-1 downto mantissa_size-2) & 
+                                            or_vect_bits(mnt_rem_res) when mnt_div_done;
 
         when DIVIDE_2 =>
           if (remainder >= divisor) then
@@ -306,17 +319,28 @@ begin
             count <= count + 1;
             state <= DIVIDE_1;
           end if;
+          if mnt_div_done then
+            z_m2(mantissa_size+3 downto 0) <= mnt_div_res(mantissa_size+extra_precision_bits downto extra_precision_bits) & 
+                                              mnt_rem_res(mantissa_size-1 downto mantissa_size-2) & 
+                                              or_vect_bits(mnt_rem_res);
+          end if;
+
 
         when DIVIDE_3 =>
-          z_m2       <= mnt_div_res & (0 to 2 => '0');
-          z_m        <= quotient(mantissa_size+3 downto 1) & (quotient(0) or or_vect_bits(remainder));
+          if mnt_div_done then
+            z_m2(mantissa_size+3 downto 0) <= mnt_div_res(mantissa_size+extra_precision_bits downto extra_precision_bits) & 
+                                              mnt_rem_res(mantissa_size-1 downto mantissa_size-2) & 
+                                              or_vect_bits(mnt_rem_res);
+          end if;
+          z_m(mantissa_size+3 downto 0) <= z_m2(mantissa_size+extra_precision_bits+3 downto extra_precision_bits+3) & quotient(2) & quotient(1) & (quotient(0) or or_vect_bits(remainder));
+          --z_m <= quotient(mantissa_size+3 downto 1) & (quotient(0) or or_vect_bits(remainder));
           precision_div <= quotient(2);
           round_bit <= quotient(1);
           sticky    <= quotient(0) or or_vect_bits(remainder);
           state     <= NORMALIZE_0;
 
         when NORMALIZE_0 =>
-          z_m2       <= z_m2 sll to_integer(unsigned(mnt_clz2));      
+          z_m2 <= z_m2 sll to_integer(unsigned(mnt_clz2));      
           if (z_m(mantissa_size+3) = '0' and signed(z_e) > -bias+1) then
             z_e       <= std_logic_vector(unsigned(z_e) - 1);
             z_m       <= z_m sll to_integer(unsigned(mnt_clz));
@@ -329,7 +353,7 @@ begin
         when NORMALIZE_1 =>
           if (signed(z_e) < -bias+1) then
             z_e       <= std_logic_vector(unsigned(z_e) + 1);
-            z_m2       <= '0' & z_m2(mantissa_size+3 downto 1);
+            z_m2      <= '0' & z_m2(mantissa_size+extra_precision_bits+3 downto 1);
             z_m       <= '0' & z_m(mantissa_size+3 downto 1);
             precision_div <= z_m(3);
             round_bit <= z_m(2);

@@ -20,6 +20,7 @@ entity fp_norm is
     rst_ni          : in  std_logic;
     op_mode         : in  std_logic_vector(FP_INSTR_LEN-1 downto 0);
     round_mode      : in  std_logic_vector(7 downto 0);
+    round_en        : in  std_logic;
     norm_a          : in  std_logic;
     norm_b          : in  std_logic;
     inf_a           : in  std_logic;
@@ -155,7 +156,7 @@ begin
       end if;
 
       -- Step 2: Correct the normalized input if the exponent overflows or underflows
-      if overflow_norm = '1' then
+      if overflow_norm then
         if overflow_en then
           mantissa_norm(mantissa_size+2 + 1+mantissa_size downto 2 + 1+mantissa_size) <= (others => '0'); -- zero out the bits that will map to the mantissa signal
         else
@@ -195,7 +196,7 @@ begin
       else
         exp_sum(exponent_size-1 downto 0) <= (exponent_size-1 downto 1 => '1') & '0';
       end if;
-      overflow_norm <= '1';
+      overflow_norm <= round_en; -- only enable the overflow for operations that use the round unit -- AAA see if this can be put under overflow_en and use round_em imstead tp control overflow_em
     end if;
   end process;
 
@@ -213,13 +214,15 @@ begin
   implicit_bit <= mantissa_norm_int(mantissa_size+2) when or_vect_bits(op_mode(1 downto 0)) else
                   mantissa_norm_int(mantissa_size*2);
 
-  inexact_round <=                (mantissa_norm(0 + 1+mantissa_size)         or (mnt_res_add(0) and mnt_res_add(mantissa_size+3)))  or inexact_norm  when (op_mode(0) or op_mode(1)) else
+  inexact_round <= '0' when not(round_en) else 
+                                  (mantissa_norm(0 + 1+mantissa_size)         or (mnt_res_add(0) and mnt_res_add(mantissa_size+3)))  or inexact_norm  when (op_mode(0) or op_mode(1)) else
       (inexact_int or or_vect_bits(mantissa_norm(2*mantissa_size-1 downto 0)) or (mnt_res_mul(0) and mnt_res_mul(mantissa_size*2+1)) or inexact_norm);
 
   mantissa <= mantissa_norm(mantissa_size+1 + 1+mantissa_size downto 2 + 1+mantissa_size) when (op_mode(0) or op_mode(1)) else
               mantissa_norm(2*mantissa_size+mantissa_size downto 2*mantissa_size+1); -- when op_mode(2)
 
-  precision_round <= mantissa_norm(1 + 1+mantissa_size) when (op_mode(0) or op_mode(1)) else
+  precision_round <= '0' when not(round_en) else
+                     mantissa_norm(1 + 1+mantissa_size) when (op_mode(0) or op_mode(1)) else
                      mantissa_norm(2*mantissa_size); -- when op_mode(2)
 
   --INEXACT_CHECK : process(all)
