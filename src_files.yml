@@ -5,7 +5,6 @@ KFPU:
   files: [
     modules/config.sv,
     modules/fpu_pkg.vhd,
-    modules/fp1_to_fp2.vhd,
     modules/fp_add.vhd,
     modules/fp_classify.vhd,
     modules/fp_div.vhd,
